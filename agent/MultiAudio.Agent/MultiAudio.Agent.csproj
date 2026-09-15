@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>MultiAudio.Agent</RootNamespace>
+    <!-- Windows-specific audio APIs (WASAPI) land in a Windows-only
+         adapter later (Architecture.md §2.2). This project itself
+         targets net8.0 rather than net8.0-windows so it stays
+         buildable/testable cross-platform until that lands. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+</Project>

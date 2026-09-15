@@ -1,0 +1,14 @@
+# Node / web
+node_modules/
+dist/
+.vite/
+*.local
+
+# .NET / agent
+bin/
+obj/
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
