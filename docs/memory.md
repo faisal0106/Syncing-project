@@ -332,3 +332,45 @@ Everything else should be built around the answer to this question.
     open questions a real-hardware pass needs to answer — treat the
     threshold constants as a documented starting point to tune, not a
     verified-correct final answer.
+-   **Real-hardware-test robustness pass**, prompted directly by the
+    plan to actually run this on a Windows PC with real Bluetooth
+    devices for the first time:
+    -   `AgentLog.cs` (new): mirrors `Console.Out`/`Console.Error` to a
+        timestamped log file under `agent/MultiAudio.Agent/logs/` via
+        `Console.SetOut`, so every existing `Console.WriteLine` call
+        site gets a persistent record for free — nothing needed to
+        change elsewhere. Exists because a real test run can hit a
+        problem after the console window's been closed or scrolled
+        past.
+    -   `Program.cs`: widened the top-level try/catch to also cover
+        `new ControlServer()`, not just `RunAsync` — its constructor
+        chain reaches `new MMDeviceEnumerator()` unconditionally, which
+        throws on a machine without a working Windows Audio service.
+        This exact gap was caught by actually running the agent (in
+        this sandbox, `MMDeviceEnumerator()` throws
+        `PlatformNotSupportedException` for an unrelated reason — no
+        COM on Linux — but it proved the try/catch now catches it
+        cleanly with a `[FATAL]` message instead of an unhandled crash,
+        which is the real thing being tested here). Also added a
+        specific `HttpListenerException` catch with a plain-language
+        "another instance is probably already running" message, since
+        a port-already-in-use failure is a likely real mistake on a
+        first real run, not developer-only error.
+    -   `SessionManager.RefreshDevices`: fixed a real gap — a device
+        that went `NotPresent`/`Unplugged` while `Playing` was
+        previously left with its state stuck at `Playing` and kept
+        registered with `AudioEngine`, which would have meant every
+        audio callback (tens of times a second) hit-and-logged a write
+        to a now-dead WASAPI endpoint the moment real Bluetooth
+        headphones actually disconnect mid-playback — exactly the kind
+        of thing that happens routinely with real Bluetooth, never with
+        loopback/simulated testing. Now unregisters the device from
+        `AudioEngine` and stops it once, with one log line, the moment
+        the disconnect is detected.
+    -   `README.md`: rewrote "Current status" (was still describing the
+        pre-Phase-1 scaffold) and added a "Testing on real hardware"
+        section with concrete steps and — importantly — what's
+        genuinely uncertain and worth watching for (Bluetooth
+        `IAudioClock` support, the threshold constants above), so
+        whoever runs this knows what a good vs. a concerning result
+        looks like rather than just "try it and see".

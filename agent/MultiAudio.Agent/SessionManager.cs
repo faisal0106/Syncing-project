@@ -114,8 +114,33 @@ namespace MultiAudio.Agent
                                     }
                                     else if (state == CoreAudioDeviceState.NotPresent || state == CoreAudioDeviceState.Unplugged)
                                     {
-                                        if (winDev.State != ProtocolDeviceState.Playing)
-                                            winDev.State = ProtocolDeviceState.Disconnected;
+                                        if (winDev.State == ProtocolDeviceState.Playing)
+                                        {
+                                            // The endpoint vanished mid-playback (Bluetooth
+                                            // headphones powered off, walked out of range,
+                                            // etc.). Stop feeding it and pull it out of the
+                                            // AudioEngine's fan-out immediately, instead of
+                                            // leaving its state as Playing and letting every
+                                            // audio callback hit-and-log a write to a dead
+                                            // WASAPI endpoint (rules.md #12 -- never fail
+                                            // silently, but a real disconnect shouldn't turn
+                                            // into per-callback log spam either).
+                                            _audioEngine.UnregisterDevice(id);
+                                            try
+                                            {
+                                                // StartAsync/StopAsync do their real work
+                                                // synchronously under their own lock and
+                                                // only wrap it in Task.CompletedTask, so
+                                                // this cannot deadlock or block on I/O.
+                                                winDev.StopAsync().GetAwaiter().GetResult();
+                                            }
+                                            catch (Exception stopEx)
+                                            {
+                                                Console.WriteLine($"[SessionManager] Error stopping vanished device '{name}': {stopEx.Message}");
+                                            }
+                                            Console.WriteLine($"[SessionManager] '{name}' disconnected while playing -- removed from active playback.");
+                                        }
+                                        winDev.State = ProtocolDeviceState.Disconnected;
                                     }
                                 }
                             }
