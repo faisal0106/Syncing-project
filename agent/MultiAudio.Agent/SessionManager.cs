@@ -240,17 +240,18 @@ namespace MultiAudio.Agent
             var (session, devices) = GetSessionAndEnabledDevices(sessionId);
             session.Position = position;
 
-            // Start each output device and register it with the AudioEngine
+            // Phase 1: start each device's native output. This is also
+            // when a WindowsAudioOutputDevice measures its real WASAPI
+            // latency (rules.md #7), so every device's LatencyMs is
+            // known by the time this finishes -- before any device is
+            // registered with the AudioEngine and real audio starts
+            // flowing to it.
             var failures = new List<(string DeviceId, Exception Error)>();
             await Task.WhenAll(devices.Select(async d =>
             {
                 try
                 {
                     await d.StartAsync();
-                    if (d is WindowsAudioOutputDevice winDev)
-                    {
-                        _audioEngine.RegisterDevice(winDev);
-                    }
                 }
                 catch (Exception ex)
                 {
@@ -264,6 +265,32 @@ namespace MultiAudio.Agent
                 session.PlaybackState = PlaybackState.Stopped;
                 throw new ProtocolException(ErrorCode.AUDIO_INIT_FAILED,
                     $"All {failures.Count} device(s) failed to start: {failures.First().Error.Message}");
+            }
+
+            var started = devices.Where(d => !failures.Any(f => f.DeviceId == d.Id)).ToList();
+            var winDevices = started.OfType<WindowsAudioOutputDevice>().ToList();
+
+            // Phase 2: now that every device's real hardware latency is
+            // known, compute each one's scheduling offset (Architecture.md
+            // §4 -- target_time = master_clock + scheduling_offset) so a
+            // device with lower latency than the slowest one in the
+            // session holds its first real audio back by the difference,
+            // rather than racing ahead of it. rules.md #14: this is the
+            // scheduling/buffering-based alignment that rule asks for
+            // instead of stopping and restarting devices to resync them.
+            var measuredLatencies = winDevices.Where(d => d.LatencyMs.HasValue).Select(d => d.LatencyMs!.Value).ToList();
+            if (measuredLatencies.Count > 0)
+            {
+                var maxLatency = measuredLatencies.Max();
+                foreach (var d in winDevices)
+                {
+                    d.SetSchedulingOffset(maxLatency - (d.LatencyMs ?? maxLatency));
+                }
+            }
+
+            foreach (var d in winDevices)
+            {
+                _audioEngine.RegisterDevice(d);
             }
 
             // Start real-time audio distribution
@@ -327,7 +354,23 @@ namespace MultiAudio.Agent
                 {
                     await device.StartAsync();
                     if (device is WindowsAudioOutputDevice winDev)
+                    {
+                        // Align this newly-joining device against
+                        // whatever the session's slowest-latency output
+                        // currently is, the same startup alignment
+                        // PlayAsync does for a fresh session
+                        // (Architecture.md §4).
+                        var latencies = _audioEngine.RegisteredDevices
+                            .Where(d => d.LatencyMs.HasValue)
+                            .Select(d => d.LatencyMs!.Value)
+                            .ToList();
+                        if (winDev.LatencyMs.HasValue && latencies.Count > 0)
+                        {
+                            var maxLatency = Math.Max(latencies.Max(), winDev.LatencyMs.Value);
+                            winDev.SetSchedulingOffset(maxLatency - winDev.LatencyMs.Value);
+                        }
                         _audioEngine.RegisterDevice(winDev);
+                    }
                 }
                 else
                 {
@@ -377,9 +420,20 @@ namespace MultiAudio.Agent
         private static DeviceSyncInfo ToSyncInfo(IAudioOutputDevice d)
         {
             var diag = d.GetDiagnostics();
+
+            // Real per-device sync classification (Architecture.md §4):
+            // give the drift estimator a few seconds of real samples
+            // before trusting it, so startup noise doesn't get reported
+            // as "Synced" or "Degraded". Thresholds are deliberately
+            // loose -- consumer audio clocks (crystal-oscillator
+            // tolerance) are usually well under 1 ms/s; several ms/s
+            // sustained means something is actually wrong, not just
+            // normal hardware variation.
             var syncState = diag.LastError != null ? SyncState.Degraded
-                : Math.Abs(diag.DriftEstimateMsPerSec) < 0.05 ? SyncState.Synced
-                : SyncState.Syncing;
+                : !diag.DriftEstimateConfident ? SyncState.Syncing
+                : Math.Abs(diag.DriftEstimateMsPerSec) < 2.0 ? SyncState.Synced
+                : Math.Abs(diag.DriftEstimateMsPerSec) < 8.0 ? SyncState.Syncing
+                : SyncState.Degraded;
 
             return new DeviceSyncInfo
             {

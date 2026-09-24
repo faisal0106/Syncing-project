@@ -52,7 +52,11 @@ namespace MultiAudio.Agent.Devices
             // identical (rules.md #5, #7 — latency is measured/estimated,
             // never assumed uniform).
             _simulatedConnectLatencyMs = 60 + Rng.NextDouble() * 140;   // 60-200ms
-            _simulatedDriftMsPerSec = (Rng.NextDouble() - 0.5) * 0.4;   // +/-0.2 ms/s
+            // +/-3 ms/s: wide enough to land in all three of
+            // SessionManager.ToSyncInfo's real drift thresholds
+            // (Synced/Syncing/Degraded) across different simulated
+            // instances, not just the "Synced" band.
+            _simulatedDriftMsPerSec = (Rng.NextDouble() - 0.5) * 6.0;
         }
 
         public async Task ConnectAsync()
@@ -110,6 +114,9 @@ namespace MultiAudio.Agent.Devices
             BufferDepthMs = Math.Round(_bufferDepthMs, 1),
             ClockOffsetMs = Math.Round(_clockOffsetMs, 2),
             DriftEstimateMsPerSec = Math.Round(_simulatedDriftMsPerSec, 3),
+            // Simulated numbers are settled/deterministic from the
+            // moment they exist, unlike a real device's warm-up period.
+            DriftEstimateConfident = true,
             LastError = null
         };
 

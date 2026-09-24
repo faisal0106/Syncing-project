@@ -265,3 +265,70 @@ Everything else should be built around the answer to this question.
     serializing as `"Available"` instead of `"available"`. Fixed by
     removing the options-level fallback and giving `ErrorCode` its own
     explicit attribute instead.
+-   **Phase 2 synchronization engine implemented** (`Audio/DeviceClockTracker.cs`,
+    `Audio/NativeAudioClockAccess.cs`, `Devices/WindowsAudioOutputDevice.cs`,
+    `SessionManager.PlayAsync`/`SetDeviceEnabledAsync`, `Audio/AudioEngine.cs`).
+    Closes the gap the previous entry called out — `ClockOffsetMs` and
+    `DriftEstimateMsPerSec` are no longer hardcoded to `0`:
+    -   **Latency** (`LatencyMs`) is now read from WASAPI's own
+        `IAudioClient::GetStreamLatency` right after the device starts,
+        replacing the placeholder `null`. rules.md #7 — measured, not
+        guessed.
+    -   **Clock offset/drift** come from `DeviceClockTracker`, which
+        compares `IAudioClient::GetPosition` (via the `AudioClockClient`
+        service — the device's own hardware clock) against wall-clock
+        time on a rolling ~15s window, and fits a linear regression for
+        the drift slope. This is deliberately *not* derived from
+        software buffer bookkeeping, which would only measure what this
+        process handed to WASAPI, not what the hardware actually played.
+        A `DriftEstimateConfident` flag (needs ≥5 real samples, ~5s)
+        stops the first few seconds of startup noise from being reported
+        as a real measurement — `SessionManager.ToSyncInfo`'s
+        Synced/Syncing/Degraded thresholds now key off real magnitude
+        (< 2 ms/s / < 8 ms/s / above) and off that confidence flag,
+        instead of the old always-basically-false `< 0.05` check that
+        was tuned for the previous hardcoded-zero placeholder.
+    -   **Startup alignment**: `SessionManager.PlayAsync` now starts
+        every device first (so every `LatencyMs` is known), then tells
+        each `WindowsAudioOutputDevice` how long to hold its first real
+        audio back (`SetSchedulingOffset`) so a low-latency device
+        doesn't produce its first audible sample before a high-latency
+        one — Architecture.md §4's `target_time = master_clock +
+        scheduling_offset` model. `SetDeviceEnabledAsync` does the same
+        against whichever devices are already registered when a device
+        joins mid-session (needed `AudioEngine.RegisteredDevices`, a
+        small new read-only accessor).
+    -   **Ongoing drift correction**: `WindowsAudioOutputDevice` now
+        routes every buffer write through `AddWithDriftCorrection`,
+        which — only once `DriftEstimateConfident` is true — trims or
+        pads a bounded slice (≤2% of a chunk) when the buffer has
+        drifted outside ±40ms of a 150ms target. This is rules.md #14's
+        "buffering and controlled timing adjustments, not repeated
+        stop/restart" applied literally: small enough per chunk to be
+        inaudible, gated so it never fires on ordinary jitter.
+    -   **Isolated undocumented dependency (rules.md #11):** none of
+        the above is exposed by NAudio's public `WasapiOut` API — the
+        `AudioClient` it creates internally, which is where
+        `StreamLatency`/`AudioClockClient` actually live, is a private
+        field. `Audio/NativeAudioClockAccess.cs` reads it via reflection
+        and is the *only* place that happens; every call is wrapped so
+        a failure (e.g. a future NAudio version renaming the field)
+        degrades sync telemetry to "unavailable" rather than breaking
+        playback. Pinned to NAudio 2.2.1 — re-verify this file
+        specifically before bumping that version.
+-   **Still not verified: any of this against real hardware.** Same
+    constraint as before — no Windows/.NET runtime or Bluetooth devices
+    were available in any environment used for this pass, so the sync
+    engine was built and compiled (`dotnet build`, 0 warnings/errors,
+    verified independently against the actual committed files, not just
+    a scratch copy) but never run against a live WASAPI endpoint. In
+    particular: whether `IAudioClient::GetPosition`/`AudioClockClient`
+    behave as expected on real Bluetooth A2DP endpoints (some drivers
+    are known to have weaker `IAudioClock` support than wired ones),
+    whether the reflection-based `NativeAudioClockAccess` lookup
+    actually returns a populated field at runtime, and whether the
+    chosen thresholds (150ms target buffer, ±40ms correction band, 2/8
+    ms/s Synced/Syncing/Degraded cutoffs) hold up perceptually are all
+    open questions a real-hardware pass needs to answer — treat the
+    threshold constants as a documented starting point to tune, not a
+    verified-correct final answer.

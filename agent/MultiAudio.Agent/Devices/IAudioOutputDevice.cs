@@ -41,6 +41,16 @@ namespace MultiAudio.Agent.Devices
         public double BufferDepthMs { get; set; }
         public double ClockOffsetMs { get; set; }
         public double DriftEstimateMsPerSec { get; set; }
+
+        /// <summary>
+        /// False during the first few seconds after a device starts
+        /// playing, before enough real clock samples exist to trust
+        /// <see cref="DriftEstimateMsPerSec"/> (Audio.DeviceClockTracker).
+        /// Callers should treat an unconfident estimate as "still
+        /// syncing" rather than reading 0 as "perfectly synced".
+        /// </summary>
+        public bool DriftEstimateConfident { get; set; }
+
         public string? LastError { get; set; }
     }
 }

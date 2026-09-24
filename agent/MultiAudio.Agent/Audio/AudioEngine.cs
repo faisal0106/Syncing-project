@@ -77,6 +77,15 @@ namespace MultiAudio.Agent.Audio
             _activeOutputs.TryRemove(deviceId, out _);
         }
 
+        /// <summary>
+        /// Devices currently registered to receive real-time audio.
+        /// SessionManager uses this to compute a newly-joining device's
+        /// scheduling offset (Architecture.md §4) against whatever is
+        /// already playing, the same way it aligns every device at the
+        /// start of a session.
+        /// </summary>
+        public IEnumerable<WindowsAudioOutputDevice> RegisteredDevices => _activeOutputs.Values;
+
         public async Task StartAsync()
         {
             lock (_lock)
